@@ -1,0 +1,95 @@
+%% Library management system: explicit business decisions for downstream agents.
+%% USERS already exists: preserve its exact columns, types, nullability and defaults.
+%% Never recreate, alter or drop USERS as part of a new library migration.
+%% Existing USERS: serial id PK; email varchar(255) NOT NULL UNIQUE;
+%% name varchar(255) NULL; created_at timestamp NOT NULL DEFAULT NOW().
+%% New integer entity IDs use serial PKs. Junction PKs are composite FK pairs,
+%% not generated IDs. All new FKs are NOT NULL and use ON DELETE CASCADE.
+%% Every user has zero or one borrower profile; every borrower has exactly one user.
+%% borrowers.user_id is UNIQUE. membership_number is a required unique library ID.
+%% borrowers.is_active defaults to true; inactive borrowers cannot start new loans.
+%% BOOKS represents individual physical copies, not abstract titles or editions.
+%% barcode is required and unique per copy. isbn is nullable text, not unique:
+%% multiple copies may share an ISBN, and some books do not have an ISBN.
+%% title is required; published_year is nullable integer; withdrawn_at is nullable.
+%% Books may have zero or more authors and genres, allowing uncatalogued copies.
+%% An author or genre may describe zero or more copies. Use explicit junctions.
+%% Author full_name is required but not unique: distinct authors can share a name.
+%% Genre name is required and unique using PostgreSQL's default case-sensitive equality.
+%% book_authors PK = (book_id, author_id); book_genres PK = (book_id, genre_id).
+%% BORROWERS and BOOKS each have zero or more historical LOANS.
+%% Each loan references exactly one borrower and exactly one physical book copy.
+%% A loan is active when returned_at IS NULL; completed loans are retained.
+%% Require a partial UNIQUE index on loans(book_id) WHERE returned_at IS NULL:
+%% one physical copy can have at most one active loan, enforced under concurrency.
+%% Borrowers may hold multiple active loans; no loan limit or fines are modelled.
+%% checked_out_at defaults to NOW(); due_at is required and set explicitly at checkout.
+%% returned_at is nullable. CHECK due_at > checked_out_at and
+%% CHECK returned_at IS NULL OR returned_at >= checked_out_at.
+%% Overdue is derived from returned_at IS NULL AND due_at < NOW(); do not store it.
+%% All new timestamp columns use timestamptz; never change existing USERS timestamps.
+%% New non-key columns are NOT NULL unless explicitly described as nullable above.
+%% Archive borrowers via is_active and books via withdrawn_at to preserve loan history.
+%% Do not hard-delete users, borrowers or books with loans during normal operations.
+%% Cascading FKs are structural deletion behavior, not permission to delete history.
+%% Checkout must verify active borrower and non-withdrawn book in the same transaction.
+erDiagram
+    USERS ||--o| BORROWERS : has
+    BORROWERS ||--o{ LOANS : borrows
+    BOOKS ||--o{ LOANS : loan_history
+    BOOKS ||--o{ BOOK_AUTHORS : credits
+    AUTHORS ||--o{ BOOK_AUTHORS : writes
+    BOOKS ||--o{ BOOK_GENRES : classified_as
+    GENRES ||--o{ BOOK_GENRES : categorizes
+
+    USERS {
+        integer id PK "Existing serial ID"
+        varchar(255) email UK "Required"
+        varchar(255) name "Nullable"
+        timestamp created_at "Required; default NOW()"
+    }
+
+    BORROWERS {
+        integer id PK "Generated serial ID"
+        integer user_id FK, UK "Required; references users.id"
+        text membership_number UK "Required library member ID"
+        boolean is_active "Required; default true"
+    }
+
+    BOOKS {
+        integer id PK "Generated serial ID"
+        text barcode UK "Required physical copy identifier"
+        text isbn "Nullable; shared across copies"
+        text title "Required"
+        integer published_year "Nullable"
+        timestamptz withdrawn_at "Nullable; archives this copy"
+    }
+
+    AUTHORS {
+        integer id PK "Generated serial ID"
+        text full_name "Required; not unique"
+    }
+
+    GENRES {
+        integer id PK "Generated serial ID"
+        text name UK "Required; case-sensitive unique"
+    }
+
+    BOOK_AUTHORS {
+        integer book_id PK, FK "References books.id"
+        integer author_id PK, FK "References authors.id"
+    }
+
+    BOOK_GENRES {
+        integer book_id PK, FK "References books.id"
+        integer genre_id PK, FK "References genres.id"
+    }
+
+    LOANS {
+        integer id PK "Generated serial ID"
+        integer borrower_id FK "Required; references borrowers.id"
+        integer book_id FK "Required; one active loan per copy"
+        timestamptz checked_out_at "Required; default NOW()"
+        timestamptz due_at "Required; after checkout"
+        timestamptz returned_at "Nullable; NULL means active"
+    }
